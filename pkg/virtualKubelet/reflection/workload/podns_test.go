@@ -586,6 +586,51 @@ var _ = Describe("Namespaced Pod Reflection Tests", func() {
 				})
 			})
 
+			When("the remote pod is terminating in a terminal phase", func() {
+				BeforeEach(func() {
+					local.Status.Phase = corev1.PodRunning
+					local.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+					remote.SetDeletionTimestamp(&metav1.Time{Time: time.Now()})
+					remote.Status.Phase = corev1.PodSucceeded
+					remote.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}}
+				})
+
+				When("the shadow pod is not terminating (the remote pod was deleted by others)", func() {
+					BeforeEach(func() {
+						shadow = &offloadingv1beta1.ShadowPod{Status: offloadingv1beta1.ShadowPodStatus{Phase: corev1.PodRunning}}
+					})
+
+					It("should succeed", func() { Expect(err).ToNot(HaveOccurred()) })
+					It("should keep the phase of the local pod and mark it as not ready", func() {
+						localAfter := GetPod(client, LocalNamespace, PodName)
+						Expect(localAfter.Status.Phase).To(BeIdenticalTo(corev1.PodRunning))
+						Expect(localAfter.Status.Conditions[0].Type).To(BeIdenticalTo(corev1.PodReady))
+						Expect(localAfter.Status.Conditions[0].Status).To(BeIdenticalTo(corev1.ConditionFalse))
+					})
+				})
+
+				When("the shadow pod is terminating as well (the deletion comes from the reflection)", func() {
+					BeforeEach(func() {
+						shadow = &offloadingv1beta1.ShadowPod{ObjectMeta: metav1.ObjectMeta{
+							DeletionTimestamp: &metav1.Time{Time: time.Now()}, Finalizers: []string{"test"}}}
+					})
+
+					It("should succeed", func() { Expect(err).ToNot(HaveOccurred()) })
+					It("should reflect the terminal phase of the remote pod", func() {
+						localAfter := GetPod(client, LocalNamespace, PodName)
+						Expect(localAfter.Status.Phase).To(BeIdenticalTo(corev1.PodSucceeded))
+					})
+				})
+
+				When("the shadow pod does not exist", func() {
+					It("should succeed", func() { Expect(err).ToNot(HaveOccurred()) })
+					It("should reflect the terminal phase of the remote pod", func() {
+						localAfter := GetPod(client, LocalNamespace, PodName)
+						Expect(localAfter.Status.Phase).To(BeIdenticalTo(corev1.PodSucceeded))
+					})
+				})
+			})
+
 			When("the remote pod is nil", func() {
 				BeforeEach(func() { remote = nil })
 
@@ -635,6 +680,40 @@ var _ = Describe("Namespaced Pod Reflection Tests", func() {
 							Expect(localAfter.Status.Phase).To(BeIdenticalTo(corev1.PodFailed))
 							Expect(localAfter.Status.Reason).To(BeIdenticalTo(forge.RemotePodTerminatedReason))
 						})
+					})
+				})
+
+				When("the shadow pod is running (the remote pod is going to be recreated)", func() {
+					BeforeEach(func() {
+						shadow = &offloadingv1beta1.ShadowPod{Status: offloadingv1beta1.ShadowPodStatus{Phase: corev1.PodRunning}}
+					})
+
+					When("the local pod is ready", func() {
+						BeforeEach(func() {
+							local.Status.Phase = corev1.PodRunning
+							local.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+						})
+
+						It("should succeed", func() { Expect(err).ToNot(HaveOccurred()) })
+						It("should keep the phase of the local pod and mark it as not ready", func() {
+							localAfter := GetPod(client, LocalNamespace, PodName)
+							Expect(localAfter.Status.Phase).To(BeIdenticalTo(corev1.PodRunning))
+							Expect(localAfter.Status.Conditions[0].Type).To(BeIdenticalTo(corev1.PodReady))
+							Expect(localAfter.Status.Conditions[0].Status).To(BeIdenticalTo(corev1.ConditionFalse))
+						})
+					})
+
+					When("the local pod is not ready", func() {
+						BeforeEach(func() {
+							local.Status.Phase = corev1.PodPending
+
+							// No update should be issued: the local pod is already not ready.
+							client.PrependReactor("update", "*", func(action testing.Action) (handled bool, _ runtime.Object, err error) {
+								return true, nil, errors.New("should not call update")
+							})
+						})
+
+						It("should succeed", func() { Expect(err).ToNot(HaveOccurred()) })
 					})
 				})
 			})

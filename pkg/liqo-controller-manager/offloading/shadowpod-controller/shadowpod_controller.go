@@ -107,6 +107,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{}, err
 		}
 
+		// The existing pod is being deleted, but not because of the shadowpod: do not copy its status, as it transiently
+		// reaches a terminal phase while terminating, which would prevent its recreation. The pod deletion event
+		// triggers a new reconciliation, which recreates it.
+		if shadowPod.DeletionTimestamp.IsZero() && !existingPod.DeletionTimestamp.IsZero() {
+			klog.Infof("pod %q is terminating while its shadowpod is not, will recreate it once deleted",
+				klog.KObj(&existingPod))
+			return ctrl.Result{}, nil
+		}
+
 		// Update ShadowPod status same as Pod status
 		shadowPod.Status.Phase = existingPod.Status.DeepCopy().Phase
 		if newErr := r.Client.Status().Update(ctx, &shadowPod); newErr != nil {

@@ -240,6 +240,64 @@ var _ = Describe("Reconcile", func() {
 		})
 	})
 
+	When("the pod reached a terminal phase", func() {
+		const keepFinalizer = "test.liqo.io/keep"
+
+		var deleted bool
+
+		BeforeEach(func() {
+			deleted = false
+		})
+
+		setup := func() {
+			Expect(k8sClient.Create(ctx, &testShadowPod)).To(Succeed())
+			testShadowPod.Status.Phase = corev1.PodRunning
+			Expect(k8sClient.Status().Update(ctx, &testShadowPod)).To(Succeed())
+
+			testPod.Finalizers = []string{keepFinalizer}
+			Expect(k8sClient.Create(ctx, &testPod)).To(Succeed())
+			testPod.Status.Phase = corev1.PodSucceeded
+			Expect(k8sClient.Status().Update(ctx, &testPod)).To(Succeed())
+			if deleted {
+				Expect(k8sClient.Delete(ctx, &testPod)).To(Succeed())
+			}
+		}
+
+		AfterEach(func() {
+			pod := corev1.Pod{}
+			Expect(k8sClient.Get(ctx, req.NamespacedName, &pod)).To(Succeed())
+			pod.Finalizers = nil
+			Expect(k8sClient.Update(ctx, &pod)).To(Succeed())
+		})
+
+		When("the pod completed by itself", func() {
+			BeforeEach(setup)
+
+			It("should copy the terminal phase to the shadowpod", func() {
+				shadowPod := offloadingv1beta1.ShadowPod{}
+				Expect(k8sClient.Get(ctx, req.NamespacedName, &shadowPod)).To(Succeed())
+				Expect(shadowPod.Status.Phase).To(Equal(corev1.PodSucceeded))
+			})
+		})
+
+		When("the pod is being deleted while the shadowpod is not", func() {
+			BeforeEach(func() {
+				deleted = true
+				setup()
+			})
+
+			It("should not copy the terminal phase to the shadowpod", func() {
+				shadowPod := offloadingv1beta1.ShadowPod{}
+				Expect(k8sClient.Get(ctx, req.NamespacedName, &shadowPod)).To(Succeed())
+				Expect(shadowPod.Status.Phase).To(Equal(corev1.PodRunning))
+			})
+
+			It("should log that the pod will be recreated once deleted", func() {
+				Expect(buffer.String()).To(ContainSubstring("is terminating while its shadowpod is not, will recreate it once deleted"))
+			})
+		})
+	})
+
 	When("verifying events", func() {
 		BeforeEach(func() {
 			Expect(k8sClient.Create(ctx, &testShadowPod)).To(Succeed())
