@@ -92,6 +92,15 @@ var (
 	// VkOptionsTemplateGroupVersionResource is groupResourceVersion used to register these objects.
 	VkOptionsTemplateGroupVersionResource = SchemeGroupVersion.WithResource(VkOptionsTemplateResource)
 
+	// OffloadingSecurityPolicyResource is the resource name used to register the OffloadingSecurityPolicy CRD.
+	OffloadingSecurityPolicyResource = "offloadingsecuritypolicies"
+
+	// OffloadingSecurityPolicyGroupResource is group resource used to register these objects.
+	OffloadingSecurityPolicyGroupResource = schema.GroupResource{Group: SchemeGroupVersion.Group, Resource: OffloadingSecurityPolicyResource}
+
+	// OffloadingSecurityPolicyGroupVersionResource is groupResourceVersion used to register these objects.
+	OffloadingSecurityPolicyGroupVersionResource = SchemeGroupVersion.WithResource(OffloadingSecurityPolicyResource)
+
 	// SchemeBuilder is used to add go types to the GroupVersionKind scheme.
 	SchemeBuilder = &scheme.Builder{GroupVersion: SchemeGroupVersion}
 

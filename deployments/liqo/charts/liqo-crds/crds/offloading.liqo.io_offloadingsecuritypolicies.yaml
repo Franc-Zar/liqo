@@ -1,0 +1,225 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: offloadingsecuritypolicies.offloading.liqo.io
+spec:
+  group: offloading.liqo.io
+  names:
+    categories:
+    - liqo
+    kind: OffloadingSecurityPolicy
+    listKind: OffloadingSecurityPolicyList
+    plural: offloadingsecuritypolicies
+    shortNames:
+    - offsecpol
+    - osp
+    singular: offloadingsecuritypolicy
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.level
+      name: Level
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          OffloadingSecurityPolicy defines the security policy the provider enforces on the pods offloaded by the selected consumer clusters.
+
+          Policies behave like NetworkPolicies: a consumer cluster selected by no policy is unrestricted, consistently with
+          Kubernetes, which enforces no Pod Security Standard unless configured to. Once a policy selects it, only what the
+          selecting policies grant is admitted, and the order they are applied in does not matter: the effective level is the
+          most permissive one they set (restricted if none sets it), and the effective allowances are the union of theirs.
+          Liqo creates no policy. The OffloadingSecurityPolicy lives only in the provider cluster and is never replicated.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: OffloadingSecurityPolicySpec defines the security policy
+              enforced on the pods offloaded by the selected consumer clusters.
+            properties:
+              allow:
+                description: |-
+                  Allow lists what the policy allows on top of the level, and takes precedence over it.
+                  Allowances relax the baseline controls at any level, while the controls added only by the restricted level
+                  (e.g. runAsNonRoot, allowPrivilegeEscalation, volume types) cannot be relaxed: use the baseline level instead.
+                  Allow is ignored when the level is privileged.
+                minProperties: 1
+                properties:
+                  capabilities:
+                    description: Capabilities are the Linux capabilities containers
+                      may add on top of those allowed by the level.
+                    items:
+                      description: Capability represent POSIX capabilities type
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                  hostNamespaces:
+                    description: HostNamespaces are the host namespaces offloaded
+                      pods may share.
+                    items:
+                      description: HostNamespace is a host namespace a pod can share.
+                      enum:
+                      - HostNetwork
+                      - HostPID
+                      - HostIPC
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                  hostPaths:
+                    description: HostPaths are the hostPath volume path prefixes offloaded
+                      pods may mount.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                  hostPorts:
+                    description: HostPorts are the host port ranges containers may
+                      bind.
+                    items:
+                      description: HostPortRange is an inclusive range of host ports.
+                      properties:
+                        max:
+                          description: Max is the last port of the range.
+                          format: int32
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                        min:
+                          description: Min is the first port of the range.
+                          format: int32
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                      required:
+                      - max
+                      - min
+                      type: object
+                      x-kubernetes-validations:
+                      - message: max must be greater than or equal to min
+                        rule: self.max >= self.min
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  hostProcess:
+                    description: HostProcess allows Windows HostProcess containers.
+                    type: boolean
+                  privileged:
+                    description: Privileged allows privileged containers.
+                    type: boolean
+                  seLinuxTypes:
+                    description: SELinuxTypes are the SELinux types pods may set on
+                      top of those allowed by the level.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                  sysctls:
+                    description: |-
+                      Sysctls are the sysctls pods may set on top of the safe set allowed by the level.
+                      A trailing '*' matches every sysctl with that prefix (e.g. "net.ipv4.*").
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                  unconfinedAppArmor:
+                    description: UnconfinedAppArmor allows the unconfined AppArmor
+                      profile.
+                    type: boolean
+                  unconfinedSeccomp:
+                    description: UnconfinedSeccomp allows the Unconfined seccomp profile.
+                    type: boolean
+                  unmaskedProcMount:
+                    description: UnmaskedProcMount allows the Unmasked procMount type.
+                    type: boolean
+                type: object
+              clusterSelector:
+                description: |-
+                  ClusterSelector selects the consumer clusters the policy applies to, matching the labels of their
+                  ForeignCluster (e.g. liqo.io/remote-cluster-id). An empty selector selects every consumer.
+                properties:
+                  matchExpressions:
+                    description: matchExpressions is a list of label selector requirements.
+                      The requirements are ANDed.
+                    items:
+                      description: |-
+                        A label selector requirement is a selector that contains values, a key, and an operator that
+                        relates the key and values.
+                      properties:
+                        key:
+                          description: key is the label key that the selector applies
+                            to.
+                          type: string
+                        operator:
+                          description: |-
+                            operator represents a key's relationship to a set of values.
+                            Valid operators are In, NotIn, Exists and DoesNotExist.
+                          type: string
+                        values:
+                          description: |-
+                            values is an array of string values. If the operator is In or NotIn,
+                            the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                            the values array must be empty. This array is replaced during a strategic
+                            merge patch.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - key
+                      - operator
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                      map is equivalent to an element of matchExpressions, whose key field is "key", the
+                      operator is "In", and the values array contains only "value". The requirements are ANDed.
+                    type: object
+                type: object
+                x-kubernetes-map-type: atomic
+              level:
+                description: |-
+                  Level is the Pod Security Standards profile the policy grants. The most permissive level among the policies
+                  selecting a consumer cluster applies, or the restricted one when none of them sets it. When unset, the policy
+                  only grants its allowances on top of the level set by the others (restricted, if none sets it).
+                enum:
+                - privileged
+                - baseline
+                - restricted
+                type: string
+            required:
+            - clusterSelector
+            type: object
+            x-kubernetes-validations:
+            - message: at least one of level and allow must be set
+              rule: has(self.level) || has(self.allow)
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources: {}
