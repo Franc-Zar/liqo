@@ -23,9 +23,11 @@ import (
 	. "github.com/onsi/gomega/gstruct"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	offloadingv1beta1 "github.com/liqotech/liqo/apis/offloading/v1beta1"
 	liqoconst "github.com/liqotech/liqo/pkg/consts"
+	"github.com/liqotech/liqo/pkg/securitypolicy"
 	"github.com/liqotech/liqo/pkg/utils"
 	"github.com/liqotech/liqo/pkg/utils/testutil"
 	"github.com/liqotech/liqo/pkg/webhooks/pod/testutils"
@@ -341,5 +343,92 @@ var _ = Describe("Webhook", func() {
 				"Node affinities do not match the expected ones",
 			)
 		})
+	})
+})
+
+var _ = Describe("Offloading security policy node affinity", func() {
+	const runtimeClassName = "liqo"
+
+	var (
+		strategy offloadingv1beta1.PodOffloadingStrategyType
+		pod      *corev1.Pod
+	)
+
+	localTerm := corev1.NodeSelectorTerm{MatchExpressions: []corev1.NodeSelectorRequirement{
+		{Key: liqoconst.TypeLabel, Operator: corev1.NodeSelectorOpNotIn, Values: []string{liqoconst.TypeNode}},
+	}}
+	hostNetworkTerm := corev1.NodeSelectorTerm{MatchExpressions: []corev1.NodeSelectorRequirement{
+		{Key: securitypolicy.LevelNodeLabel, Operator: corev1.NodeSelectorOpIn, Values: []string{"baseline", "privileged"}},
+		{Key: securitypolicy.FeatureHostNetwork.NodeLabel(), Operator: corev1.NodeSelectorOpIn,
+			Values: []string{securitypolicy.FeatureAllowed, securitypolicy.FeaturePartial}},
+	}}
+	terms := func() []corev1.NodeSelectorTerm {
+		if pod.Spec.Affinity == nil || pod.Spec.Affinity.NodeAffinity == nil ||
+			pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+			return nil
+		}
+		return pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+	}
+
+	BeforeEach(func() {
+		pod = &corev1.Pod{Spec: corev1.PodSpec{HostNetwork: true, Containers: []corev1.Container{{Name: "app", Image: "app"}}}}
+	})
+
+	JustBeforeEach(func() {
+		nsoff := &offloadingv1beta1.NamespaceOffloading{Spec: offloadingv1beta1.NamespaceOffloadingSpec{PodOffloadingStrategy: strategy}}
+		Expect(mutatePod(nsoff, pod, runtimeClassName)).To(Succeed())
+	})
+
+	When("the pod may be scheduled both locally and remotely", func() {
+		BeforeEach(func() { strategy = offloadingv1beta1.LocalAndRemotePodOffloadingStrategyType })
+
+		It("allows the local nodes, and the virtual nodes whose policy admits the pod", func() {
+			Expect(terms()).To(ConsistOf(hostNetworkTerm, localTerm))
+		})
+	})
+
+	When("the pod must be offloaded", func() {
+		BeforeEach(func() { strategy = offloadingv1beta1.RemotePodOffloadingStrategyType })
+
+		It("allows only the virtual nodes whose policy admits the pod", func() {
+			virtualTerm := hostNetworkTerm.DeepCopy()
+			virtualTerm.MatchExpressions = append([]corev1.NodeSelectorRequirement{
+				{Key: liqoconst.TypeLabel, Operator: corev1.NodeSelectorOpIn, Values: []string{liqoconst.TypeNode}},
+			}, virtualTerm.MatchExpressions...)
+			Expect(terms()).To(ConsistOf(*virtualTerm))
+		})
+	})
+
+	When("the pod must be scheduled locally", func() {
+		BeforeEach(func() { strategy = offloadingv1beta1.LocalPodOffloadingStrategyType })
+
+		It("does not mutate the pod", func() { Expect(pod.Spec.Affinity).To(BeNil()) })
+
+		When("the pod has the Liqo runtime class", func() {
+			BeforeEach(func() { pod.Spec.RuntimeClassName = ptr.To(runtimeClassName) })
+
+			It("restricts the virtual nodes anyway, without adding the virtual node toleration", func() {
+				Expect(terms()).To(ConsistOf(hostNetworkTerm, localTerm))
+				Expect(pod.Spec.Tolerations).To(BeEmpty())
+			})
+		})
+	})
+
+	When("any provider cluster admits the pod", func() {
+		BeforeEach(func() {
+			strategy = offloadingv1beta1.LocalAndRemotePodOffloadingStrategyType
+			pod.Spec = corev1.PodSpec{
+				SecurityContext: &corev1.PodSecurityContext{
+					RunAsNonRoot:   ptr.To(true),
+					SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+				},
+				Containers: []corev1.Container{{Name: "app", Image: "app", SecurityContext: &corev1.SecurityContext{
+					AllowPrivilegeEscalation: ptr.To(false),
+					Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+				}}},
+			}
+		})
+
+		It("does not restrict the nodes", func() { Expect(pod.Spec.Affinity).To(BeNil()) })
 	})
 })

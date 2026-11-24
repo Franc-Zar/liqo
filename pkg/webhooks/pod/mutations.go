@@ -22,6 +22,7 @@ import (
 
 	offloadingv1beta1 "github.com/liqotech/liqo/apis/offloading/v1beta1"
 	liqoconst "github.com/liqotech/liqo/pkg/consts"
+	"github.com/liqotech/liqo/pkg/securitypolicy"
 	"github.com/liqotech/liqo/pkg/utils"
 )
 
@@ -126,24 +127,56 @@ func fillPodWithTheNewNodeSelector(imposedNodeSelector *corev1.NodeSelector, pod
 	}
 }
 
+// fillPodWithSecurityPolicyNodeSelector restricts the virtual nodes the pod can be scheduled on to those whose provider
+// cluster admits it, according to the offloading security policy they advertise (see securitypolicy.NodeLabels), so
+// that the pod is not denied upon offloading. Local nodes are still allowed if allowLocal is true, while the pod is not
+// modified if any provider cluster admits it.
+func fillPodWithSecurityPolicyNodeSelector(pod *corev1.Pod, allowLocal bool) {
+	requirements := securitypolicy.Requirements(&pod.ObjectMeta, &pod.Spec)
+	if len(requirements) == 0 {
+		return
+	}
+
+	nodeSelector := &corev1.NodeSelector{NodeSelectorTerms: securitypolicy.NodeSelectorTerms(requirements)}
+	if allowLocal {
+		nodeSelector.NodeSelectorTerms = append(nodeSelector.NodeSelectorTerms, corev1.NodeSelectorTerm{
+			MatchExpressions: []corev1.NodeSelectorRequirement{{
+				Key:      liqoconst.TypeLabel,
+				Operator: corev1.NodeSelectorOpNotIn,
+				Values:   []string{liqoconst.TypeNode},
+			}},
+		})
+	}
+
+	klog.V(5).Infof("Offloading security policy NodeSelector: %s", nodeSelector)
+	fillPodWithTheNewNodeSelector(nodeSelector, pod)
+}
+
 // mutatePod checks the NamespaceOffloading CR associated with the Pod's Namespace.
 // The pod is modified in different ways according to the PodOffloadingStrategyType
-// chosen in the CR. Two possible modifications:
+// chosen in the CR. Three possible modifications:
 // - The VirtualNodeToleration is added to the Pod Toleration if necessary.
 // - The old Pod NodeSelector is substituted with a new one according to the PodOffloadingStrategyType.
-// No changes are applied to the Pod if the Liqo runtime when the Liqo runtime class is specified.
+// - The virtual nodes the pod can be scheduled on are restricted to those whose offloading security policy admits it.
+// The first two are not applied when the Liqo runtime class is specified, as it already enforces the scheduling on
+// virtual nodes, while the last one is applied whenever the pod may be offloaded, including with the runtime class.
 func mutatePod(namespaceOffloading *offloadingv1beta1.NamespaceOffloading, pod *corev1.Pod, liqoRuntimeClassName string) error {
 	// The NamespaceOffloading CR contains information about the PodOffloadingStrategy and
 	// the NodeSelector inserted by the user (ClusterSelector field).
-	klog.V(5).Infof("Chosen strategy: %s", namespaceOffloading.Spec.PodOffloadingStrategy)
+	strategy := namespaceOffloading.Spec.PodOffloadingStrategy
+	klog.V(5).Infof("Chosen strategy: %s", strategy)
 
-	// If strategy is equal to LocalPodOffloadingStrategy there is nothing to do
-	if namespaceOffloading.Spec.PodOffloadingStrategy == offloadingv1beta1.LocalPodOffloadingStrategyType {
+	hasLiqoRuntimeClass := pod.Spec.RuntimeClassName != nil && *pod.Spec.RuntimeClassName == liqoRuntimeClassName
+
+	// If strategy is equal to LocalPodOffloadingStrategy, the pod is never offloaded, unless it has the Liqo runtime class.
+	if strategy == offloadingv1beta1.LocalPodOffloadingStrategyType {
+		if hasLiqoRuntimeClass {
+			fillPodWithSecurityPolicyNodeSelector(pod, true)
+		}
 		return nil
 	}
 
 	// Mutate Pod affinity and tolerations only if the Pod has NOT the Liqo runtime class.
-	hasLiqoRuntimeClass := pod.Spec.RuntimeClassName != nil && *pod.Spec.RuntimeClassName == liqoRuntimeClassName
 	if !hasLiqoRuntimeClass {
 		// Create the right Toleration according to the PodOffloadingStrategy case.
 		toleration, err := createTolerationFromNamespaceOffloading(namespaceOffloading.Spec.PodOffloadingStrategy)
@@ -173,5 +206,7 @@ func mutatePod(namespaceOffloading *offloadingv1beta1.NamespaceOffloading, pod *
 		klog.V(5).Infof("Pod NodeSelector: %s", imposedNodeSelector)
 	}
 
+	// The local nodes remain allowed, unless the strategy requires the pod to be offloaded.
+	fillPodWithSecurityPolicyNodeSelector(pod, strategy != offloadingv1beta1.RemotePodOffloadingStrategyType)
 	return nil
 }
