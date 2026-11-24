@@ -19,18 +19,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	liqov1beta1 "github.com/liqotech/liqo/apis/core/v1beta1"
 	offloadingv1beta1 "github.com/liqotech/liqo/apis/offloading/v1beta1"
 	"github.com/liqotech/liqo/pkg/consts"
+	"github.com/liqotech/liqo/pkg/securitypolicy"
 	"github.com/liqotech/liqo/pkg/utils/getters"
 	pod "github.com/liqotech/liqo/pkg/utils/pod"
 	"github.com/liqotech/liqo/pkg/utils/resource"
@@ -41,6 +45,8 @@ import (
 // +kubebuilder:rbac:groups=offloading.liqo.io,resources=shadowpods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=offloading.liqo.io,resources=quotas,verbs=get;list;watch
+// +kubebuilder:rbac:groups=offloading.liqo.io,resources=offloadingsecuritypolicies,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core.liqo.io,resources=foreignclusters,verbs=get;list;watch
 
 // Validator is the handler used by the Validating Webhook to validate shadow pods.
 type Validator struct {
@@ -106,6 +112,13 @@ func (spv *Validator) HandleCreate(ctx context.Context, req *admission.Request) 
 			return admission.Errored(code, err)
 		}
 		return admission.Denied(err.Error())
+	}
+
+	// The OffloadingSecurityPolicies selecting the origin cluster are enforced (none, if no policy selects it).
+	// Updates are not evaluated, since they cannot change any security-relevant field (see pod.CheckShadowPodUpdate),
+	// consistently with the Pod Security Admission, which does not evaluate metadata-only updates either.
+	if response := spv.validateSecurityPolicy(ctx, shadowpod, liqov1beta1.ClusterID(clusterID)); !response.Allowed {
+		return response
 	}
 
 	if !spv.enableResourceValidation {
@@ -220,6 +233,38 @@ func (spv *Validator) HandleDelete(ctx context.Context, req *admission.Request) 
 	}
 
 	return admission.Allowed("")
+}
+
+// validateSecurityPolicy evaluates the shadow pod against the OffloadingSecurityPolicy enforced on its origin cluster.
+func (spv *Validator) validateSecurityPolicy(ctx context.Context, shadowpod *offloadingv1beta1.ShadowPod,
+	clusterID liqov1beta1.ClusterID,
+) admission.Response {
+	policy, err := securitypolicy.Resolve(ctx, spv.client, clusterID)
+	if err != nil {
+		klog.Errorf("Failed retrieving the OffloadingSecurityPolicies of cluster %q: %v", clusterID, err)
+		return admission.Errored(http.StatusInternalServerError, fmt.Errorf("failed retrieving the offloading security policy: %w", err))
+	}
+
+	violations := securitypolicy.Evaluate(&shadowpod.ObjectMeta, &shadowpod.Spec.Pod, &policy)
+	if len(violations) == 0 {
+		return admission.Allowed("")
+	}
+
+	klog.Warningf("ShadowPod %q of cluster %q violates the offloading security policy: %s",
+		klog.KObj(shadowpod), clusterID, strings.Join(violations, ", "))
+	return securityPolicyDenied(violations)
+}
+
+// securityPolicyDenied returns a response denying the request because of the given offloading security policy
+// violations, each reported as a cause of type [offloadingv1beta1.OffloadingSecurityPolicyViolationCause], so that clients can recognize it.
+func securityPolicyDenied(violations []string) admission.Response {
+	response := admission.Denied(fmt.Sprintf("the pod violates the offloading security policy: %s", strings.Join(violations, ", ")))
+	causes := make([]metav1.StatusCause, len(violations))
+	for i := range violations {
+		causes[i] = metav1.StatusCause{Type: offloadingv1beta1.OffloadingSecurityPolicyViolationCause, Message: violations[i]}
+	}
+	response.Result.Details = &metav1.StatusDetails{Causes: causes}
+	return response
 }
 
 func (spv *Validator) validateShadowPodClusterID(ctx context.Context, ns, spClusterID string) (int32, error) {

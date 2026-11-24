@@ -77,6 +77,14 @@ rules:
   - update
   - watch
 - apiGroups:
+  - core.liqo.io
+  resources:
+  - foreignclusters
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - networking.liqo.io
   resources:
   - firewallconfigurations
@@ -91,6 +99,7 @@ rules:
   - offloading.liqo.io
   resources:
   - namespaceoffloadings
+  - offloadingsecuritypolicies
   - quotas
   - shadowpods
   - virtualnodes

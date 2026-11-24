@@ -256,3 +256,12 @@ func forgeForeignCluster(clusterID liqov1beta1.ClusterID) *liqov1beta1.ForeignCl
 		},
 	}
 }
+
+// forgeBaselineSecurityPolicy returns the OffloadingSecurityPolicy granting the baseline level to every consumer
+// cluster, as recommended by the documentation.
+func forgeBaselineSecurityPolicy() *offloadingv1beta1.OffloadingSecurityPolicy {
+	return &offloadingv1beta1.OffloadingSecurityPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "baseline"},
+		Spec:       offloadingv1beta1.OffloadingSecurityPolicySpec{Level: offloadingv1beta1.PodSecurityLevelBaseline},
+	}
+}

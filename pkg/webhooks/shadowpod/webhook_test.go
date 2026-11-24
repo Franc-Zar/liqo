@@ -54,7 +54,7 @@ var _ = Describe("Validating webhook", func() {
 		fakeNamespace = testutil.FakeNamespaceWithClusterID(clusterID, testNamespace)
 
 		fakeClient = fake.NewClientBuilder().WithScheme(scheme).
-			WithObjects(fakeNamespace, foreignCluster, quota, quota2).
+			WithObjects(fakeNamespace, foreignCluster, quota, quota2, forgeBaselineSecurityPolicy()).
 			WithStatusSubresource(
 				&liqov1beta1.ForeignCluster{},
 				&offloadingv1beta1.ShadowPod{}).
