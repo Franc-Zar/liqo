@@ -68,7 +68,38 @@ Liqo leverages a custom resource, named *ShadowPod*, combined with an appropriat
 
 * Removal of **scheduling constraints** (e.g., *Affinity*, *NodeSelector*, *SchedulerName*, *Preemption*, ...), as referring to the local cluster.
 * Mutation of **service account** related information, to allow offloaded pods to transparently interact with the local (i.e., origin) API server, instead of the remote one.
-* Enforcement of the properties concerning the usage of **host namespaces** (e.g., network, IPC, PID) to *false* (i.e., disabled), as potentially invasive and troublesome.
+
+Security-relevant settings (e.g., the usage of **host namespaces**, privileged containers, host paths) are propagated verbatim as well, and the provider cluster decides whether they are allowed through the *OffloadingSecurityPolicy* resources it defines, if any.
+Each policy selects the consumer clusters it applies to through its `clusterSelector`, matched against the labels of their *ForeignCluster* (e.g., `liqo.io/remote-cluster-id`), and grants them a Pod Security Standards level, plus optional allowances on top of it (e.g., host namespaces, capabilities, host paths).
+Policies behave like *NetworkPolicies*:
+
+* Consumer clusters selected by no policy are **unrestricted**, consistently with Kubernetes, which enforces no Pod Security Standard unless configured to.
+* Once at least one policy selects a consumer cluster, only what the selecting policies grant is admitted: the effective level is the most permissive one they set (*restricted*, if none sets it), and the effective allowances are the union of theirs.
+
+````{warning}
+Liqo creates no *OffloadingSecurityPolicy*: by default, the pods offloaded by any consumer cluster are admitted regardless of their security settings, including privileged containers and host namespaces, which can compromise the provider cluster nodes.
+Unless all consumer clusters are fully trusted, provider cluster administrators are recommended to create at least a policy applying to every consumer cluster (i.e., with an empty `clusterSelector`), such as:
+
+```yaml
+apiVersion: offloading.liqo.io/v1beta1
+kind: OffloadingSecurityPolicy
+metadata:
+  name: baseline
+spec:
+  clusterSelector: {}
+  level: baseline
+```
+
+Further policies can then grant more to specific consumer clusters, while a stricter policy can be enforced on some of them only by excluding them from the broader ones (e.g., through a `matchExpressions` term on a *ForeignCluster* label), since policies can only grant, never restrict.
+Policies are checked only when pods are offloaded: creating or tightening them does not affect the pods already running.
+Moreover, the policies complement, rather than replace, the Pod Security Admission and any other admission control configured in the provider cluster, which keep applying to the offloaded pods.
+````
+
+Pods denied by the provider cluster are marked as *Failed*, with the *OffloadingSecurityPolicyViolation* reason.
+The effective policy is advertised through the labels of the corresponding virtual node: `policy.liqo.io/level` reports the level, while `policy.liqo.io/<feature>` (e.g., `policy.liqo.io/host-network`) reports each relaxed control, either `allowed` or `partial` (i.e., only some values are allowed, such as some capabilities).
+The virtual nodes towards provider clusters that select the consumer cluster with no policy advertise the *privileged* level.
+When a pod that may be offloaded is created, Liqo adds a node affinity restricting it to the virtual nodes whose advertised policy admits it (and to the local nodes, unless the pod must be offloaded), so that it is not scheduled where it would be denied.
+Pods complying with the *restricted* level are not modified, as any provider cluster admits them, while the others cannot be scheduled on virtual nodes not advertising any policy (e.g., targeting provider clusters running a Liqo version without this feature).
 
 ````{admonition} Note
 *Anti-affinity presets* can be leveraged to specify predefined scheduling constraints for offloaded pods, spreading them across different nodes in the remote cluster.
