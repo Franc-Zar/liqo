@@ -242,6 +242,9 @@ func (npr *NamespacedPodReflector) Handle(ctx context.Context, name string) erro
 				klog.Infof("Remote shadowpod %q already exists (local pod: %q)", npr.RemoteRef(name), npr.LocalRef(name))
 				return nil
 			}
+			if kerrors.HasStatusCause(err, offloadingv1beta1.OffloadingSecurityPolicyViolationCause) {
+				return npr.HandleSecurityPolicyViolation(ctx, local, err)
+			}
 			klog.Errorf("Failed to create remote shadowpod %q (local pod: %q): %v", npr.RemoteRef(name), npr.LocalRef(name), err)
 			if !kerrors.IsConflict(err) {
 				npr.Event(local, corev1.EventTypeWarning, forge.EventFailedReflection, forge.EventFailedReflectionMsg(err))
@@ -283,6 +286,25 @@ func (npr *NamespacedPodReflector) Handle(ctx context.Context, name string) erro
 
 	// Reflect the status from the remote pod to the local one.
 	return npr.HandleStatus(ctx, local, remote, shadow, info)
+}
+
+// HandleSecurityPolicyViolation marks the local pod as Failed, since the provider cluster denied the creation of the
+// shadowpod because of its OffloadingSecurityPolicy. Retrying would be pointless, as the pod would be denied again,
+// while failing it allows its controller (if any) to recreate it, and the pod is then no longer reflected.
+func (npr *NamespacedPodReflector) HandleSecurityPolicyViolation(ctx context.Context, local *corev1.Pod, violation error) error {
+	klog.Warningf("Remote shadowpod %q denied by the offloading security policy (local pod: %q): %v",
+		npr.RemoteRef(local.GetName()), npr.LocalRef(local.GetName()), violation)
+	npr.Event(local, corev1.EventTypeWarning, forge.EventSecurityPolicyViolation, forge.EventSecurityPolicyViolationMsg(violation))
+
+	po := forge.LocalSecurityPolicyViolationPod(local, violation.Error())
+	if _, err := npr.localPodsClient.UpdateStatus(ctx, po, metav1.UpdateOptions{FieldManager: forge.ReflectionFieldManager}); err != nil {
+		klog.Errorf("Failed to mark local pod %q as %v (%v): %v", npr.LocalRef(local.GetName()), corev1.PodFailed,
+			forge.PodOffloadingSecurityPolicyViolationReason, err)
+		return fmt.Errorf("marking local pod %q as failed: %w", npr.LocalRef(local.GetName()), err)
+	}
+
+	klog.Infof("Local pod %q marked as %v (%v)", npr.LocalRef(local.GetName()), corev1.PodFailed, forge.PodOffloadingSecurityPolicyViolationReason)
+	return nil
 }
 
 // HandleLabels mutates the local object labels, to mark the pod as offloaded and allow filtering at the informer level.
@@ -343,7 +365,6 @@ func (npr *NamespacedPodReflector) ForgeShadowPod(ctx context.Context, local *co
 		forge.APIServerSupportMutator(npr.config.APIServerSupport, local.Annotations, pod.ServiceAccountName(local),
 			saSecretRetriever, ipsGetter, npr.config.HomeAPIServerHost, npr.config.HomeAPIServerPort),
 		forge.ServiceAccountMutator(npr.config.APIServerSupport, local.Annotations))
-
 	if forgingOpts != nil {
 		mutators = append(mutators,
 			forge.NodeSelectorMutator(forgingOpts.NodeSelector),

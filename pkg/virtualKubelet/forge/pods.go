@@ -41,6 +41,9 @@ const (
 	// RemotePodTerminatedReason -> the reason assigned to pods in the local cluster whose remote counterpart has completed,
 	// but it wasn't possible to reflect the real status (e.g. missed completion event), and the shadow pod reports a terminal phase.
 	RemotePodTerminatedReason = "RemotePodTerminated"
+	// PodOffloadingSecurityPolicyViolationReason -> the reason assigned to pods whose offloading has been denied by the
+	// provider cluster, since violating its OffloadingSecurityPolicy.
+	PodOffloadingSecurityPolicyViolationReason = "OffloadingSecurityPolicyViolation"
 
 	// ServiceAccountVolumeName is the prefix name that will be added to volumes that mount ServiceAccount secrets.
 	// This constant is taken from kubernetes/kubernetes (plugin/pkg/admission/serviceaccount/admission.go).
@@ -130,6 +133,15 @@ func LocalRejectedPod(local *corev1.Pod, phase corev1.PodPhase, reason string) *
 		ObjectMeta: *local.ObjectMeta.DeepCopy(),
 		Status:     LocalRejectedPodStatus(local.Status.DeepCopy(), phase, reason),
 	}
+}
+
+// LocalSecurityPolicyViolationPod forges the status of a local pod whose offloading has been denied by the provider
+// cluster, since violating its OffloadingSecurityPolicy. The pod is marked as Failed, as retrying would be pointless,
+// and the message reports the violations returned by the provider cluster.
+func LocalSecurityPolicyViolationPod(local *corev1.Pod, message string) *corev1.Pod {
+	pod := LocalRejectedPod(local, corev1.PodFailed, PodOffloadingSecurityPolicyViolationReason)
+	pod.Status.Message = message
+	return pod
 }
 
 // LocalRejectedPodStatus forges the status of the local rejected pod.
@@ -241,10 +253,11 @@ func RemotePodSpec(creation bool, local, remote *corev1.PodSpec, mutators ...Rem
 	// present, and the remote creation would fail as the corresponding service account is not present.
 	remote.AutomountServiceAccountToken = ptr.To(false)
 
-	// This fields are currently forced to false, to prevent invasive settings on the remote cluster (which might not work).
-	remote.HostIPC = false
-	remote.HostNetwork = false
-	remote.HostPID = false
+	// The host namespaces settings are propagated verbatim: whether they are allowed is decided by the provider cluster,
+	// which enforces its OffloadingSecurityPolicy (denying them unless explicitly allowed).
+	remote.HostIPC = local.HostIPC
+	remote.HostNetwork = local.HostNetwork
+	remote.HostPID = local.HostPID
 
 	// Perform the additional mutations to implement advanced functionalities.
 	for _, mutator := range mutators {

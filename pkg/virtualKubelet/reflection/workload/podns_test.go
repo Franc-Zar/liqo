@@ -18,12 +18,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/virtual-kubelet/virtual-kubelet/node/api/statsv1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -202,6 +204,7 @@ var _ = Describe("Namespaced Pod Reflection Tests", func() {
 					local.SetLabels(map[string]string{"foo": "bar", FakeNotReflectedLabelKey: "true"})
 					local.SetAnnotations(map[string]string{"bar": "baz", FakeNotReflectedAnnotKey: "true"})
 					local.Spec.Containers = []corev1.Container{{Name: "bar", Image: "foo"}}
+					local.Spec.HostIPC, local.Spec.HostNetwork, local.Spec.HostPID = true, true, true
 					CreatePod(client, &local)
 
 					// Currently, the fake client does not handle SSA, and we need to add a custom reactor for that.
@@ -244,6 +247,12 @@ var _ = Describe("Namespaced Pod Reflection Tests", func() {
 						Expect(shadowAfter.Spec.Pod.Containers).To(HaveLen(1))
 						Expect(shadowAfter.Spec.Pod.Containers[0].Name).To(BeIdenticalTo("bar"))
 						Expect(shadowAfter.Spec.Pod.Containers[0].Image).To(BeIdenticalTo("foo"))
+					})
+					It("the host namespaces settings should have been propagated", func() {
+						shadowAfter := GetShadowPod(liqoClient, RemoteNamespace, PodName)
+						Expect(shadowAfter.Spec.Pod.HostIPC).To(BeTrue())
+						Expect(shadowAfter.Spec.Pod.HostNetwork).To(BeTrue())
+						Expect(shadowAfter.Spec.Pod.HostPID).To(BeTrue())
 					})
 				})
 
@@ -305,6 +314,69 @@ var _ = Describe("Namespaced Pod Reflection Tests", func() {
 				})
 
 				When("the remote object already exists, but is not managed by the reflection", WhenBodyRemoteNotManagedByReflection())
+
+				When("the remote object creation is denied", func() {
+					const violation = "host namespaces (hostNetwork=true)"
+
+					var causes []metav1.StatusCause
+
+					BeforeEach(func() {
+						causes = []metav1.StatusCause{{Type: offloadingv1beta1.OffloadingSecurityPolicyViolationCause, Message: violation}}
+					})
+
+					denyCreation := func() {
+						liqoClient.(*liqoclientfake.Clientset).PrependReactor("create", "shadowpods",
+							func(testing.Action) (bool, runtime.Object, error) {
+								return true, nil, &kerrors.StatusError{ErrStatus: metav1.Status{
+									Status:  metav1.StatusFailure,
+									Code:    http.StatusForbidden,
+									Reason:  metav1.StatusReasonForbidden,
+									Message: `admission webhook "shadowpod.validate.liqo.io" denied the request: ` + violation,
+									Details: &metav1.StatusDetails{Causes: causes},
+								}}
+							})
+					}
+
+					When("because of the offloading security policy", func() {
+						BeforeEach(denyCreation)
+
+						It("should succeed, as retrying would be pointless", func() { Expect(err).ToNot(HaveOccurred()) })
+						It("should not create the remote object", func() {
+							Expect(GetShadowPodError(liqoClient, RemoteNamespace, PodName)).To(BeNotFound())
+						})
+						It("should mark the local pod as failed, reporting the violations", func() {
+							localAfter := GetPod(client, LocalNamespace, PodName)
+							Expect(localAfter.Status.Phase).To(Equal(corev1.PodFailed))
+							Expect(localAfter.Status.Reason).To(Equal(forge.PodOffloadingSecurityPolicyViolationReason))
+							Expect(localAfter.Status.Message).To(ContainSubstring(violation))
+						})
+					})
+
+					When("for any other reason", func() {
+						BeforeEach(func() {
+							causes = nil
+							denyCreation()
+						})
+
+						It("should fail, so that the creation is retried", func() { Expect(err).To(HaveOccurred()) })
+						It("should not mark the local pod as failed", func() {
+							Expect(GetPod(client, LocalNamespace, PodName).Status.Phase).ToNot(Equal(corev1.PodFailed))
+						})
+					})
+				})
+
+				When("the local object has been rejected by the offloading security policy", func() {
+					BeforeEach(func() {
+						local.Status.Phase = corev1.PodFailed
+						local.Status.Reason = forge.PodOffloadingSecurityPolicyViolationReason
+						UpdatePod(client, &local)
+					})
+
+					It("should succeed", func() { Expect(err).ToNot(HaveOccurred()) })
+					It("should not create the remote object", func() {
+						Expect(GetShadowPodError(liqoClient, RemoteNamespace, PodName)).To(BeNotFound())
+					})
+				})
 
 				When("the local object is in terminal phase Succeeded", func() {
 					BeforeEach(func() {

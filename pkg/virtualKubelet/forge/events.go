@@ -34,6 +34,10 @@ const (
 	// EventReflectionDisabled -> the reason for the event when reflection is disabled for the given namespace/object.
 	EventReflectionDisabled = "ReflectionDisabled"
 
+	// EventSecurityPolicyViolation -> the reason for the event when the provider cluster denies the offloading of a pod,
+	// since violating its OffloadingSecurityPolicy.
+	EventSecurityPolicyViolation = "OffloadingSecurityPolicyViolation"
+
 	// EventSuccessfulSATokensReflection -> the reason for the event when the reflection of service account tokens completes successfully.
 	EventSuccessfulSATokensReflection = "SuccessfulSATokensReflection"
 
@@ -54,6 +58,12 @@ func EventSuccessfulStatusReflectionMsg() string {
 // EventFailedReflectionMsg returns the message for the event when the outgoing reflection fails due to an error.
 func EventFailedReflectionMsg(err error) string {
 	return fmt.Sprintf("Error reflecting object to cluster %q: %v", RemoteCluster, err)
+}
+
+// EventSecurityPolicyViolationMsg returns the message for the event when the provider cluster denies the offloading of a pod,
+// since violating its OffloadingSecurityPolicy.
+func EventSecurityPolicyViolationMsg(err error) string {
+	return fmt.Sprintf("Offloading to cluster %q denied by its security policy, the pod will not be retried: %v", RemoteCluster, err)
 }
 
 // EventFailedStatusReflectionMsg returns the message for the event when the incoming reflection fails due to an error.

@@ -100,6 +100,26 @@ var _ = Describe("Pod forging", func() {
 		})
 	})
 
+	Describe("the LocalSecurityPolicyViolationPod function", func() {
+		var local, output *corev1.Pod
+
+		BeforeEach(func() {
+			local = &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "local-name", Namespace: "local-namespace"},
+				Status:     corev1.PodStatus{Phase: corev1.PodPending},
+			}
+		})
+
+		JustBeforeEach(func() { output = forge.LocalSecurityPolicyViolationPod(local, "violation message") })
+
+		It("should mark the pod as failed because of the offloading security policy", func() {
+			Expect(output.Status.Phase).To(Equal(corev1.PodFailed))
+			Expect(output.Status.Reason).To(Equal(forge.PodOffloadingSecurityPolicyViolationReason))
+		})
+		It("should report the given message", func() { Expect(output.Status.Message).To(Equal("violation message")) })
+		It("should not mutate the input object", func() { Expect(local.Status.Phase).To(Equal(corev1.PodPending)) })
+	})
+
 	Describe("the LocalRejectedPod function", func() {
 		var local, original, output *corev1.Pod
 
