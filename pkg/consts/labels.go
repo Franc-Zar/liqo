@@ -63,3 +63,7 @@ const (
 	// PodSecurityLevelRestricted is the restricted pod security level.
 	PodSecurityLevelRestricted = "restricted"
 )
+
+// SecurityPolicyNodeLabelPrefix is the prefix of the virtual node labels advertising the OffloadingSecurityPolicy
+// enforced by the provider cluster on the pods offloaded by the local cluster.
+const SecurityPolicyNodeLabelPrefix = "policy.liqo.io/"

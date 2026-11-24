@@ -16,6 +16,7 @@ package forge
 
 import (
 	"context"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -71,6 +72,13 @@ func MutateVirtualNode(ctx context.Context, cl client.Client, virtualNode *offlo
 		virtualNode.Spec.Labels = make(map[string]string)
 	}
 	virtualNode.Spec.Labels[consts.RemoteClusterID] = string(remoteClusterID)
+	// The labels advertising the provider security policy are fully owned by the ResourceSlice: drop the stale ones,
+	// so that a feature no longer allowed stops being advertised (as the merge below only adds labels).
+	for key := range virtualNode.Spec.Labels {
+		if _, ok := opts.NodeLabels[key]; !ok && strings.HasPrefix(key, consts.SecurityPolicyNodeLabelPrefix) {
+			delete(virtualNode.Spec.Labels, key)
+		}
+	}
 	virtualNode.Spec.Labels = labels.Merge(virtualNode.Spec.Labels, opts.NodeLabels)
 	virtualNode.Spec.ClusterID = remoteClusterID
 	if createNode != nil {

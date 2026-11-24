@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
@@ -39,6 +40,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	authv1beta1 "github.com/liqotech/liqo/apis/authentication/v1beta1"
+	liqov1beta1 "github.com/liqotech/liqo/apis/core/v1beta1"
+	offloadingv1beta1 "github.com/liqotech/liqo/apis/offloading/v1beta1"
 	"github.com/liqotech/liqo/internal/crdReplicator/reflection"
 	"github.com/liqotech/liqo/pkg/consts"
 	identitymanager "github.com/liqotech/liqo/pkg/identityManager"
@@ -102,6 +105,8 @@ type RemoteResourceSliceReconciler struct {
 // +kubebuilder:rbac:groups=authentication.liqo.io,resources=tenants,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=storage,resources=storageclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=offloading.liqo.io,resources=offloadingsecuritypolicies,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core.liqo.io,resources=foreignclusters,verbs=get;list;watch
 
 // Reconcile replicated ResourceSlice resources.
 func (r *RemoteResourceSliceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res ctrl.Result, err error) {
@@ -322,7 +327,13 @@ func (r *RemoteResourceSliceReconciler) handleResourcesStatus(ctx context.Contex
 
 		resourceSlice.Status.IngressClasses = getIngressClasses(r.sliceStatusOptions)
 		resourceSlice.Status.LoadBalancerClasses = getLoadBalancerClasses(r.sliceStatusOptions)
-		resourceSlice.Status.NodeLabels = getNodeLabels(r.sliceStatusOptions)
+		policyLabels, err := r.securityPolicyNodeLabels(ctx, resourceSlice)
+		if err != nil {
+			klog.Errorf("Unable to get the security policy labels for the ResourceSlice %q: %s", client.ObjectKeyFromObject(resourceSlice), err)
+			r.eventRecorder.Event(resourceSlice, corev1.EventTypeWarning, "SecurityPolicyFailed", err.Error())
+			return err
+		}
+		resourceSlice.Status.NodeLabels = labels.Merge(getNodeLabels(r.sliceStatusOptions), policyLabels)
 
 		acceptResources(resourceSlice, r.eventRecorder)
 	case authv1beta1.TenantConditionCordoned:
@@ -354,6 +365,10 @@ func (r *RemoteResourceSliceReconciler) SetupWithManager(mgr ctrl.Manager) error
 			builder.WithPredicates(predicate.And(remoteResSliceFilter, withCSR(), predicate.GenerationChangedPredicate{})),
 		).
 		Watches(&authv1beta1.Tenant{}, handler.EnqueueRequestsFromMapFunc(r.resourceSlicesEnquer())).
+		// The advertised offloading security policy depends on the policies, and on the labels of the consumer ForeignCluster.
+		Watches(&offloadingv1beta1.OffloadingSecurityPolicy{}, handler.EnqueueRequestsFromMapFunc(r.securityPolicyEnquer())).
+		Watches(&liqov1beta1.ForeignCluster{}, handler.EnqueueRequestsFromMapFunc(r.foreignClusterEnquer()),
+			builder.WithPredicates(predicate.LabelChangedPredicate{})).
 		Complete(r)
 }
 
@@ -369,22 +384,7 @@ func (r *RemoteResourceSliceReconciler) resourceSlicesEnquer() func(ctx context.
 			klog.Infof("ClusterID not set for Tenant %q", tenant.Name)
 			return nil
 		}
-		resSlices, err := getters.ListResourceSlicesByLabel(ctx, r.Client, corev1.NamespaceAll,
-			liqolabels.RemoteLabelSelectorForCluster(string(tenant.Spec.ClusterID)))
-		if err != nil {
-			klog.Errorf("Failed to retrieve ResourceSlices for Tenant %q: %v", tenant.Name, err)
-			return nil
-		}
-
-		reqs := make([]reconcile.Request, len(resSlices))
-		for i := range resSlices {
-			reqs[i] = reconcile.Request{NamespacedName: types.NamespacedName{
-				Name:      resSlices[i].Name,
-				Namespace: resSlices[i].Namespace,
-			}}
-		}
-
-		return reqs
+		return r.resourceSliceRequests(ctx, liqolabels.RemoteLabelSelectorForCluster(string(tenant.Spec.ClusterID)))
 	}
 }
 

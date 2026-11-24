@@ -304,6 +304,15 @@ rules:
 - apiGroups:
   - offloading.liqo.io
   resources:
+  - offloadingsecuritypolicies
+  - vkoptionstemplates
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - offloading.liqo.io
+  resources:
   - quotas/finalizers
   verbs:
   - update
@@ -317,14 +326,6 @@ rules:
   - list
   - patch
   - update
-  - watch
-- apiGroups:
-  - offloading.liqo.io
-  resources:
-  - vkoptionstemplates
-  verbs:
-  - get
-  - list
   - watch
 - apiGroups:
   - rbac.authorization.k8s.io
