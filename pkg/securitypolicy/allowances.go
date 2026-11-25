@@ -31,25 +31,65 @@ import (
 // what the allowances permit, as verified by the tests.
 
 const (
-	capabilityAll            corev1.Capability = "ALL"
-	capabilityNetBindService corev1.Capability = "NET_BIND_SERVICE"
+	capabilityAll            corev1.Capability = "ALL"              // every capability: only to be dropped at the restricted level
+	capabilityNetBindService corev1.Capability = "NET_BIND_SERVICE" // bind ports below 1024: the only one addable at the restricted level
 )
 
 // The following sets mirror unexported values of the latest upstream checks.
 var (
 	// baselineCapabilities are the capabilities containers may add at the baseline level.
-	baselineCapabilities = sets.New[corev1.Capability]("AUDIT_WRITE", "CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID",
-		"KILL", "MKNOD", capabilityNetBindService, "SETFCAP", "SETGID", "SETPCAP", "SETUID", "SYS_CHROOT")
-	// baselineSysctls are the sysctls pods may set at the baseline level.
-	baselineSysctls = sets.New("kernel.shm_rmid_forced", "net.ipv4.ip_local_port_range", "net.ipv4.tcp_syncookies",
-		"net.ipv4.ping_group_range", "net.ipv4.ip_unprivileged_port_start", "net.ipv4.ip_local_reserved_ports",
-		"net.ipv4.tcp_keepalive_time", "net.ipv4.tcp_fin_timeout", "net.ipv4.tcp_keepalive_intvl",
-		"net.ipv4.tcp_keepalive_probes", "net.ipv4.tcp_rmem", "net.ipv4.tcp_wmem")
+	baselineCapabilities = sets.New[corev1.Capability](
+		"AUDIT_WRITE",            // write records to the kernel audit log
+		"CHOWN",                  // change the owner and group of any file
+		"DAC_OVERRIDE",           // bypass the read, write and execute permission checks of files
+		"FOWNER",                 // bypass the checks requiring to own a file (e.g. chmod on files of other users)
+		"FSETID",                 // keep the setuid and setgid bits of a file when modifying it
+		"KILL",                   // send signals to any process, bypassing the permission checks
+		"MKNOD",                  // create special files (e.g. device nodes) with mknod
+		capabilityNetBindService, // bind ports below 1024
+		"SETFCAP",                // set the capabilities of files
+		"SETGID",                 // change the group IDs of the process
+		"SETPCAP",                // change the capability sets of the process, within its bounding set
+		"SETUID",                 // change the user IDs of the process
+		"SYS_CHROOT",             // change the root directory with chroot
+	)
+	// baselineSysctls are the sysctls pods may set at the baseline level: they are namespaced, so they affect only
+	// the pod and not the node.
+	baselineSysctls = sets.New(
+		"kernel.shm_rmid_forced",              // destroy the System V shared memory segments no process uses any more
+		"net.ipv4.ip_local_port_range",        // range of the local ports assigned to outgoing connections
+		"net.ipv4.tcp_syncookies",             // SYN cookies, protecting against SYN floods
+		"net.ipv4.ping_group_range",           // groups allowed to create ICMP echo (ping) sockets without privileges
+		"net.ipv4.ip_unprivileged_port_start", // lowest port unprivileged processes can bind
+		"net.ipv4.ip_local_reserved_ports",    // ports excluded from the range assigned to outgoing connections
+		"net.ipv4.tcp_keepalive_time",         // idle time of a TCP connection before the first keepalive probe
+		"net.ipv4.tcp_fin_timeout",            // time an orphaned TCP connection stays in FIN-WAIT-2
+		"net.ipv4.tcp_keepalive_intvl",        // interval between TCP keepalive probes
+		"net.ipv4.tcp_keepalive_probes",       // unanswered TCP keepalive probes before dropping the connection
+		"net.ipv4.tcp_rmem",                   // minimum, default and maximum size of the TCP receive buffers
+		"net.ipv4.tcp_wmem",                   // minimum, default and maximum size of the TCP send buffers
+	)
 	// baselineSELinuxTypes are the SELinux types pods may set at the baseline level.
-	baselineSELinuxTypes = sets.New("", "container_t", "container_init_t", "container_kvm_t", "container_engine_t")
+	baselineSELinuxTypes = sets.New(
+		"",                   // no type set: the container runtime default applies
+		"container_t",        // default type of container processes
+		"container_init_t",   // containers running an init system (e.g. systemd)
+		"container_kvm_t",    // containers running KVM based virtual machines (e.g. Kata Containers)
+		"container_engine_t", // containers running a container engine (e.g. nested Podman or Buildah)
+	)
 	// restrictedVolumeTypes are the volume types pods may use at the restricted level, named after their field.
-	restrictedVolumeTypes = sets.New("configMap", "csi", "downwardAPI", "emptyDir", "ephemeral", "image",
-		"persistentVolumeClaim", "projected", "secret")
+	// None of them exposes the node: hostPath, for instance, is not among them.
+	restrictedVolumeTypes = sets.New(
+		"configMap",             // keys of a ConfigMap, as files
+		"csi",                   // inline ephemeral volume provided by a CSI driver
+		"downwardAPI",           // pod and container metadata, as files
+		"emptyDir",              // empty directory living as long as the pod
+		"ephemeral",             // generic ephemeral volume, backed by a PersistentVolumeClaim created with the pod
+		"image",                 // content of an OCI image or artifact, read-only
+		"persistentVolumeClaim", // volume bound to a PersistentVolumeClaim
+		"projected",             // several sources (Secrets, ConfigMaps, downward API, service account tokens) in one directory
+		"secret",                // keys of a Secret, as files
+	)
 )
 
 // hostNamespacesAllowed waives the hostNamespaces check when every host namespace the pod shares is allowed.
